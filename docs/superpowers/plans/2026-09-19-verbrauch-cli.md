@@ -1696,8 +1696,21 @@ git commit -m "feat: add tank range and cost/consumption projection"
 - Produces:
   - `type UsageError struct{ msg string }` implementing `error`
   - `func NewRootCmd() *cobra.Command`
-  - (internal) `type App struct { dbPath string; json bool; db *store.DB }`
+  - (internal) `type App struct { dbPath string; json bool }`
+  - (internal) `func (app *App) openDB(cmd *cobra.Command) (*store.DB, error)`
   - (internal) `func resolveDBPath(flagValue string) (string, error)`
+
+**Design note (DB lifecycle):** each `RunE` calls `app.openDB(cmd)` and
+`defer`s `Close()` on the result itself — do NOT open the DB in
+`PersistentPreRunE` and close it in `PersistentPostRunE`. cobra's
+`Command.execute()` returns immediately when `RunE` returns a non-nil
+error, *before* reaching the `PersistentPostRunE` loop (confirmed in
+`github.com/spf13/cobra@v1.10.2/command.go`, `execute()`), so a
+`PersistentPostRunE`-based close silently leaks the DB handle on every
+error path — invisible on Linux/macOS (unlink-while-open succeeds there)
+but a deterministic `t.TempDir()` cleanup failure on Windows. A `defer`
+inside `RunE` itself runs regardless of `RunE`'s return value, per Go's
+own defer semantics, and needs no cobra hook at all.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1798,11 +1811,34 @@ func newUsageError(format string, args ...any) error {
 	return &UsageError{msg: fmt.Sprintf(format, args...)}
 }
 
-// App holds the state shared across a single command invocation.
+// App holds the flags shared across every command invocation. It does not
+// hold a *store.DB — see openDB below for why.
 type App struct {
 	dbPath string
 	json   bool
-	db     *store.DB
+}
+
+// openDB resolves the database path and opens a fresh connection for one
+// command invocation. Every RunE calls this at the top and defers Close on
+// the result:
+//
+//	db, err := app.openDB(cmd)
+//	if err != nil {
+//		return err
+//	}
+//	defer func() { _ = db.Close() }()
+//
+// Deferring inside RunE itself guarantees the connection closes whether
+// RunE returns an error or not. Do not move this into a
+// PersistentPreRunE/PersistentPostRunE pair: cobra skips
+// PersistentPostRunE whenever RunE returns a non-nil error, which would
+// leak the connection on every error path.
+func (app *App) openDB(cmd *cobra.Command) (*store.DB, error) {
+	path, err := resolveDBPath(app.dbPath)
+	if err != nil {
+		return nil, err
+	}
+	return store.Open(cmd.Context(), path)
 }
 
 // NewRootCmd builds the verbrauch command tree.
@@ -1812,24 +1848,6 @@ func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "verbrauch",
 		Short: "Erfasst und wertet Verbrauchszählerstände aus (Öl, Strom, ...)",
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			path, err := resolveDBPath(app.dbPath)
-			if err != nil {
-				return err
-			}
-			db, err := store.Open(cmd.Context(), path)
-			if err != nil {
-				return err
-			}
-			app.db = db
-			return nil
-		},
-		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
-			if app.db == nil {
-				return nil
-			}
-			return app.db.Close()
-		},
 	}
 	root.SilenceUsage = true
 	root.SilenceErrors = true
@@ -1903,7 +1921,13 @@ func newTypeAddCmd(app *App) *cobra.Command {
 				t.TankSize = sql.NullFloat64{Float64: tankSize, Valid: true}
 			}
 
-			id, err := app.db.CreateType(cmd.Context(), t)
+			db, err := app.openDB(cmd)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+
+			id, err := db.CreateType(cmd.Context(), t)
 			if err != nil {
 				return err
 			}
@@ -1942,7 +1966,13 @@ func newTypeListCmd(app *App) *cobra.Command {
 		Short:   "Alle Verbrauchsarten auflisten",
 		Example: "  verbrauch type list",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			types, err := app.db.ListTypes(cmd.Context())
+			db, err := app.openDB(cmd)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+
+			types, err := db.ListTypes(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -1999,10 +2029,14 @@ git commit -m "feat: add cli root command and type management"
 - Test: `internal/cli/add_test.go`
 
 **Interfaces:**
-- Consumes: `App`, `newUsageError`, `store.Reading`, `store.Refill` (Tasks 4, 5, 11)
+- Consumes: `App`, `App.openDB`, `newUsageError`, `store.Reading`, `store.Refill` (Tasks 4, 5, 11)
 - Produces:
   - `func newAddCmd(app *App) *cobra.Command` (registered as `verbrauch add`)
   - `func newRefillCmd(app *App) *cobra.Command` (registered as `verbrauch refill`)
+
+Every `RunE` opens its own DB connection via `app.openDB(cmd)` and defers
+`Close()` immediately — see Task 11's design note. Do not read or write an
+`app.db` field; it does not exist.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2155,7 +2189,13 @@ func newAddCmd(app *App) *cobra.Command {
 				return newUsageError("ungültiger --heating Wert %q, erlaubt: off, water, both", heating)
 			}
 
-			t, err := app.db.GetTypeByName(cmd.Context(), typeName)
+			db, err := app.openDB(cmd)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+
+			t, err := db.GetTypeByName(cmd.Context(), typeName)
 			if err != nil {
 				if errors.Is(err, store.ErrTypeNotFound) {
 					return newUsageError("Verbrauchsart %q nicht gefunden, siehe 'verbrauch type list'", typeName)
@@ -2163,7 +2203,7 @@ func newAddCmd(app *App) *cobra.Command {
 				return err
 			}
 
-			id, err := app.db.InsertReading(cmd.Context(), store.Reading{
+			id, err := db.InsertReading(cmd.Context(), store.Reading{
 				TypeID:       t.ID,
 				ReadingDate:  date,
 				CounterValue: value,
@@ -2220,7 +2260,13 @@ func newRefillCmd(app *App) *cobra.Command {
 				return newUsageError("ungültiges Datum %q, erwartet YYYY-MM-DD", date)
 			}
 
-			t, err := app.db.GetTypeByName(cmd.Context(), typeName)
+			db, err := app.openDB(cmd)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+
+			t, err := db.GetTypeByName(cmd.Context(), typeName)
 			if err != nil {
 				if errors.Is(err, store.ErrTypeNotFound) {
 					return newUsageError("Verbrauchsart %q nicht gefunden, siehe 'verbrauch type list'", typeName)
@@ -2228,7 +2274,7 @@ func newRefillCmd(app *App) *cobra.Command {
 				return err
 			}
 
-			id, err := app.db.InsertRefill(cmd.Context(), store.Refill{
+			id, err := db.InsertRefill(cmd.Context(), store.Refill{
 				TypeID:     t.ID,
 				RefillDate: date,
 				Amount:     amount,
@@ -2280,13 +2326,20 @@ git commit -m "feat: add reading and refill entry commands"
 - Test: `internal/cli/report_test.go`
 
 **Interfaces:**
-- Consumes: `report.BuildPoints`, `report.AggregateByPeriod`, `report.RenderChart`, `forecast.ComputeTrend`, `forecast.TankRemaining`, `forecast.Project` (Tasks 6-10), `App`, `newUsageError` (Task 11)
+- Consumes: `report.BuildPoints`, `report.AggregateByPeriod`, `report.RenderChart`, `forecast.ComputeTrend`, `forecast.TankRemaining`, `forecast.Project` (Tasks 6-10), `App`, `App.openDB`, `newUsageError` (Task 11)
 - Produces:
   - `func newReportCmd(app *App) *cobra.Command` (`verbrauch report`)
   - `func newForecastCmd(app *App) *cobra.Command` (`verbrauch forecast`)
   - `func newStatusCmd(app *App) *cobra.Command` (`verbrauch status`)
   - (internal, shared) `func toReadingInputs(readings []store.Reading) []report.ReadingInput`
   - (internal, shared) `func toRefillInputs(refills []store.Refill) []forecast.RefillInput`
+
+Every `RunE` opens its own DB connection via `app.openDB(cmd)` and defers
+`Close()` immediately — see Task 11's design note. Do not read or write an
+`app.db` field; it does not exist. Every call site that passes `time.Now()`
+into `report.AggregateByPeriod` or `forecast.ComputeTrend` must call
+`time.Now().UTC()` instead, to stay consistent with those functions'
+internal UTC-midnight normalization (see Tasks 7/9's fix history).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2437,7 +2490,13 @@ func newReportCmd(app *App) *cobra.Command {
 				return newUsageError("ungültiger --period Wert %q, erlaubt: 7d, 30d, 6m, 12m", period)
 			}
 
-			t, err := app.db.GetTypeByName(cmd.Context(), typeName)
+			db, err := app.openDB(cmd)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+
+			t, err := db.GetTypeByName(cmd.Context(), typeName)
 			if err != nil {
 				if errors.Is(err, store.ErrTypeNotFound) {
 					return newUsageError("Verbrauchsart %q nicht gefunden, siehe 'verbrauch type list'", typeName)
@@ -2445,7 +2504,7 @@ func newReportCmd(app *App) *cobra.Command {
 				return err
 			}
 
-			readings, err := app.db.ListReadings(cmd.Context(), t.ID)
+			readings, err := db.ListReadings(cmd.Context(), t.ID)
 			if err != nil {
 				return err
 			}
@@ -2454,7 +2513,13 @@ func newReportCmd(app *App) *cobra.Command {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warnung:", w)
 			}
 
-			buckets, err := report.AggregateByPeriod(points, period, time.Now())
+			// .UTC() matters here: AggregateByPeriod normalizes "now" to a UTC
+			// calendar-day midnight internally (see internal/report/aggregate.go);
+			// passing a non-UTC time.Now() would still work today because that
+			// normalization only looks at Year/Month/Day, but future code that
+			// forgets that assumption would silently apply the wrong local day.
+			// Being explicit here is cheap insurance.
+			buckets, err := report.AggregateByPeriod(points, period, time.Now().UTC())
 			if err != nil {
 				return newUsageError("%s", err.Error())
 			}
@@ -2536,7 +2601,13 @@ func newForecastCmd(app *App) *cobra.Command {
 				return err
 			}
 
-			t, err := app.db.GetTypeByName(cmd.Context(), typeName)
+			db, err := app.openDB(cmd)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+
+			t, err := db.GetTypeByName(cmd.Context(), typeName)
 			if err != nil {
 				if errors.Is(err, store.ErrTypeNotFound) {
 					return newUsageError("Verbrauchsart %q nicht gefunden, siehe 'verbrauch type list'", typeName)
@@ -2544,7 +2615,7 @@ func newForecastCmd(app *App) *cobra.Command {
 				return err
 			}
 
-			readings, err := app.db.ListReadings(cmd.Context(), t.ID)
+			readings, err := db.ListReadings(cmd.Context(), t.ID)
 			if err != nil {
 				return err
 			}
@@ -2553,7 +2624,9 @@ func newForecastCmd(app *App) *cobra.Command {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warnung:", w)
 			}
 
-			trend, err := forecast.ComputeTrend(points, 30, time.Now())
+			// .UTC() matters here for the same reason as in report.go: ComputeTrend
+			// normalizes "now" to a UTC calendar-day midnight internally.
+			trend, err := forecast.ComputeTrend(points, 30, time.Now().UTC())
 			if err != nil {
 				return err
 			}
@@ -2565,7 +2638,7 @@ func newForecastCmd(app *App) *cobra.Command {
 
 			var tankRemainingPtr *float64
 			if t.TankSize.Valid {
-				refills, err := app.db.ListRefills(cmd.Context(), t.ID)
+				refills, err := db.ListRefills(cmd.Context(), t.ID)
 				if err != nil {
 					return err
 				}
@@ -2633,7 +2706,13 @@ func newStatusCmd(app *App) *cobra.Command {
 		Short:   "Kurzübersicht: Füllstand, Reichweite, letzter Verbrauch",
 		Example: "  verbrauch status --type oel",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			t, err := app.db.GetTypeByName(cmd.Context(), typeName)
+			db, err := app.openDB(cmd)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = db.Close() }()
+
+			t, err := db.GetTypeByName(cmd.Context(), typeName)
 			if err != nil {
 				if errors.Is(err, store.ErrTypeNotFound) {
 					return newUsageError("Verbrauchsart %q nicht gefunden, siehe 'verbrauch type list'", typeName)
@@ -2641,7 +2720,7 @@ func newStatusCmd(app *App) *cobra.Command {
 				return err
 			}
 
-			readings, err := app.db.ListReadings(cmd.Context(), t.ID)
+			readings, err := db.ListReadings(cmd.Context(), t.ID)
 			if err != nil {
 				return err
 			}
@@ -2660,13 +2739,14 @@ func newStatusCmd(app *App) *cobra.Command {
 			}
 
 			if t.TankSize.Valid {
-				refills, err := app.db.ListRefills(cmd.Context(), t.ID)
+				refills, err := db.ListRefills(cmd.Context(), t.ID)
 				if err != nil {
 					return err
 				}
 				if remaining, ok := forecast.TankRemaining(toRefillInputs(refills), points); ok {
 					out.TankRemaining = &remaining
-					if trend, err := forecast.ComputeTrend(points, 30, time.Now()); err == nil && trend.AvgPerDay > 0 {
+					// .UTC() matters here for the same reason as report.go/forecast.go.
+					if trend, err := forecast.ComputeTrend(points, 30, time.Now().UTC()); err == nil && trend.AvgPerDay > 0 {
 						days := remaining / trend.AvgPerDay
 						out.DaysUntilEmpty = &days
 					}
