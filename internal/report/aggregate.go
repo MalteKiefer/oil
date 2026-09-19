@@ -53,6 +53,7 @@ func bucketKey(t time.Time, g granularity) string {
 // the DiffDays days it covers before bucketing, so a reading taken every few
 // days still produces a smooth daily/weekly/monthly series.
 func AggregateByPeriod(points []DailyPoint, period string, now time.Time) ([]Bucket, error) {
+	now = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	cutoff, gran, err := periodBounds(period, now)
 	if err != nil {
 		return nil, err
