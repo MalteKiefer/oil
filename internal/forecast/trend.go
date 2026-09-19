@@ -18,6 +18,7 @@ type Trend struct {
 // using only points with a valid (non-skipped, non-zero) diff. It returns
 // ErrInsufficientData if no such point falls in the window.
 func ComputeTrend(points []report.DailyPoint, windowDays int, now time.Time) (Trend, error) {
+	now = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	cutoff := now.AddDate(0, 0, -windowDays)
 
 	var totalDiff float64

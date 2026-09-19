@@ -49,3 +49,30 @@ func TestComputeTrend_InsufficientData(t *testing.T) {
 		t.Fatalf("ComputeTrend() error = %v, want ErrInsufficientData", err)
 	}
 }
+
+func TestComputeTrend_NonMidnightNow(t *testing.T) {
+	readings := []report.ReadingInput{
+		{Date: date("2026-01-14"), CounterValue: 0},
+		{Date: date("2026-01-16"), CounterValue: 4}, // Diff=4, DiffDays=2
+	}
+	points, _ := report.BuildPoints(readings)
+
+	// now carries a non-midnight time-of-day on purpose: this is what a real
+	// time.Now() caller (Task 13's CLI) will pass. now - 30 days = 2026-01-16
+	// (the exact date of the second reading). Without normalizing now to a
+	// calendar-day midnight first, cutoff would be 2026-01-16T09:00:00, which
+	// would incorrectly exclude the point dated 2026-01-16T00:00:00 (it comes
+	// "before" that cutoff), leaving zero valid points and wrongly returning
+	// ErrInsufficientData. With the fix, cutoff is 2026-01-16T00:00:00, so the
+	// point is correctly included ("on/after the window cutoff").
+	now := date("2026-02-15").Add(9 * time.Hour)
+
+	trend, err := forecast.ComputeTrend(points, 30, now)
+	if err != nil {
+		t.Fatalf("ComputeTrend() error = %v, want nil (boundary point should be included)", err)
+	}
+	want := 2.0 // Diff=4 / DiffDays=2
+	if math.Abs(trend.AvgPerDay-want) > 0.001 {
+		t.Errorf("AvgPerDay = %v, want %v", trend.AvgPerDay, want)
+	}
+}
