@@ -1,0 +1,14 @@
+# Go source is always checked out with LF, regardless of core.autocrlf,
+# so gofmt (which expects LF) doesn't flag every file on Windows checkouts.
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sql text eol=lf
+
+# Windows batch/PowerShell files, if any ever land here, keep CRLF.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
