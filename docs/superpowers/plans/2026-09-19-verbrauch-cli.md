@@ -1995,6 +1995,7 @@ git commit -m "feat: add cli root command and type management"
 **Files:**
 - Create: `internal/cli/add.go`
 - Create: `internal/cli/refill.go`
+- Modify: `internal/cli/root.go` (register the two new commands)
 - Test: `internal/cli/add_test.go`
 
 **Interfaces:**
@@ -2275,6 +2276,7 @@ git commit -m "feat: add reading and refill entry commands"
 - Create: `internal/cli/report.go`
 - Create: `internal/cli/forecast.go`
 - Create: `internal/cli/status.go`
+- Modify: `internal/cli/root.go` (register the three new commands)
 - Test: `internal/cli/report_test.go`
 
 **Interfaces:**
