@@ -71,6 +71,9 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newTypeCmd(app))
 	root.AddCommand(newAddCmd(app))
 	root.AddCommand(newRefillCmd(app))
+	root.AddCommand(newReportCmd(app))
+	root.AddCommand(newForecastCmd(app))
+	root.AddCommand(newStatusCmd(app))
 
 	return root
 }
