@@ -69,6 +69,8 @@ func NewRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&app.json, "json", false, "Ausgabe als JSON")
 
 	root.AddCommand(newTypeCmd(app))
+	root.AddCommand(newAddCmd(app))
+	root.AddCommand(newRefillCmd(app))
 
 	return root
 }
