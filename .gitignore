@@ -3,3 +3,6 @@
 *.db
 *.db-wal
 *.db-shm
+
+# git worktree scratch space
+.worktrees/

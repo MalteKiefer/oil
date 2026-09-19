@@ -28,6 +28,48 @@ func toReadingInputs(readings []store.Reading) []report.ReadingInput {
 
 var validPeriods = map[string]bool{"7d": true, "30d": true, "6m": true, "12m": true}
 
+type readingRowDTO struct {
+	Date         string   `json:"date"`
+	CounterValue float64  `json:"counter_value"`
+	Diff         *float64 `json:"diff,omitempty"`
+	HeatingMode  string   `json:"heating_mode,omitempty"`
+}
+
+type bucketDTO struct {
+	Label string  `json:"label"`
+	Total float64 `json:"total"`
+}
+
+type reportOutput struct {
+	Readings []readingRowDTO `json:"readings"`
+	Buckets  []bucketDTO     `json:"buckets"`
+}
+
+func toReadingRowDTOs(points []report.DailyPoint) []readingRowDTO {
+	rows := make([]readingRowDTO, len(points))
+	for i, p := range points {
+		row := readingRowDTO{
+			Date:         p.Date.Format("2006-01-02"),
+			CounterValue: p.CounterValue,
+			HeatingMode:  p.HeatingMode,
+		}
+		if !p.Skipped && p.DiffDays > 0 {
+			diff := p.Diff
+			row.Diff = &diff
+		}
+		rows[i] = row
+	}
+	return rows
+}
+
+func toBucketDTOs(buckets []report.Bucket) []bucketDTO {
+	dtos := make([]bucketDTO, len(buckets))
+	for i, b := range buckets {
+		dtos[i] = bucketDTO{Label: b.Label, Total: b.Total}
+	}
+	return dtos
+}
+
 func newReportCmd(app *App) *cobra.Command {
 	var typeName, period string
 
@@ -75,8 +117,30 @@ func newReportCmd(app *App) *cobra.Command {
 			}
 
 			if app.json {
-				return json.NewEncoder(cmd.OutOrStdout()).Encode(buckets)
+				out := reportOutput{
+					Readings: toReadingRowDTOs(points),
+					Buckets:  toBucketDTOs(buckets),
+				}
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
 			}
+
+			rw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
+			_, _ = fmt.Fprintln(rw, "DATUM\tZÄHLERSTAND\tDIFF\tHEIZMODUS")
+			for _, p := range points {
+				diffStr := "-"
+				if !p.Skipped && p.DiffDays > 0 {
+					diffStr = fmt.Sprintf("%.1f", p.Diff)
+				}
+				mode := p.HeatingMode
+				if mode == "" {
+					mode = "-"
+				}
+				_, _ = fmt.Fprintf(rw, "%s\t%.1f\t%s\t%s\n", p.Date.Format("2006-01-02"), p.CounterValue, diffStr, mode)
+			}
+			if err := rw.Flush(); err != nil {
+				return fmt.Errorf("ausgabe schreiben: %w", err)
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout())
 
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			_, _ = fmt.Fprintf(w, "ZEITRAUM\tVERBRAUCH (%s)\n", t.Unit)

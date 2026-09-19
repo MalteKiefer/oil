@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -49,6 +50,9 @@ func newRefillCmd(app *App) *cobra.Command {
 			})
 			if err != nil {
 				return err
+			}
+			if app.json {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"id": id})
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Befüllung erfasst (id=%d)\n", id)
 			return nil

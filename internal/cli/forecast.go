@@ -22,6 +22,22 @@ func toRefillInputs(refills []store.Refill) []forecast.RefillInput {
 	return inputs
 }
 
+type projectionDTO struct {
+	HorizonDays    int      `json:"horizon_days"`
+	Projected      float64  `json:"projected"`
+	Cost           *float64 `json:"cost,omitempty"`
+	DaysUntilEmpty *float64 `json:"days_until_empty,omitempty"`
+}
+
+func toProjectionDTO(p forecast.Projection) projectionDTO {
+	return projectionDTO{
+		HorizonDays:    p.HorizonDays,
+		Projected:      p.Projected,
+		Cost:           p.Cost,
+		DaysUntilEmpty: p.DaysUntilEmpty,
+	}
+}
+
 func parseHorizonDays(horizon string) (int, error) {
 	switch horizon {
 	case "7d":
@@ -95,7 +111,7 @@ func newForecastCmd(app *App) *cobra.Command {
 			projection := forecast.Project(trend, horizonDays, pricePtr, tankRemainingPtr)
 
 			if app.json {
-				return json.NewEncoder(cmd.OutOrStdout()).Encode(projection)
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(toProjectionDTO(projection))
 			}
 
 			out := cmd.OutOrStdout()

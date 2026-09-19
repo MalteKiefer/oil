@@ -49,6 +49,9 @@ func newTypeAddCmd(app *App) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if app.json {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"id": id, "name": t.Name})
+			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Verbrauchsart %q angelegt (id=%d)\n", t.Name, id)
 			return nil
 		},

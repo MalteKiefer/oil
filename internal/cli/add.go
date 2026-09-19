@@ -2,6 +2,7 @@ package cli
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -65,6 +66,9 @@ func newAddCmd(app *App) *cobra.Command {
 			})
 			if err != nil {
 				return err
+			}
+			if app.json {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"id": id})
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Zählerstand erfasst (id=%d)\n", id)
 			return nil

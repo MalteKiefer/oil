@@ -83,6 +83,66 @@ func TestReportAndForecastAndStatus(t *testing.T) {
 	}
 }
 
+func TestReportAndForecast_JSONUsesSnakeCaseKeys(t *testing.T) {
+	// Anchored to "today" (see TestReportAndForecastAndStatus above) since
+	// forecast.ComputeTrend only looks at a 30-day window before now, and
+	// needs at least 2 valid diffs (3 readings) to avoid ErrInsufficientData.
+	today := time.Now().UTC()
+	date1 := today.AddDate(0, 0, -9).Format("2006-01-02")
+	date2 := today.AddDate(0, 0, -3).Format("2006-01-02")
+	date3 := today.Format("2006-01-02")
+
+	dbPath := filepath.Join(t.TempDir(), "verbrauch.db")
+	setupType(t, dbPath, "oel", "L")
+	addReading(t, dbPath, "oel", date1, 100)
+	addReading(t, dbPath, "oel", date2, 106)
+	addReading(t, dbPath, "oel", date3, 112)
+
+	tests := []struct {
+		name        string
+		args        []string
+		wantContain []string
+		wantAbsent  []string
+	}{
+		{
+			name:        "report",
+			args:        []string{"--db", dbPath, "--json", "report", "--type", "oel", "--period", "30d"},
+			wantContain: []string{`"readings"`, `"buckets"`, `"date"`, `"counter_value"`},
+			wantAbsent:  []string{`"Label"`, `"Total"`, `"CounterValue"`},
+		},
+		{
+			name:        "forecast",
+			args:        []string{"--db", dbPath, "--json", "forecast", "--type", "oel", "--horizon", "7d"},
+			wantContain: []string{`"horizon_days"`, `"projected"`},
+			wantAbsent:  []string{`"HorizonDays"`, `"Projected"`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cmd := cli.NewRootCmd()
+			cmd.SetOut(&out)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs(tt.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("%s: %v", tt.name, err)
+			}
+			got := out.String()
+			for _, want := range tt.wantContain {
+				if !strings.Contains(got, want) {
+					t.Errorf("%s JSON output %q missing %q", tt.name, got, want)
+				}
+			}
+			for _, notWant := range tt.wantAbsent {
+				if strings.Contains(got, notWant) {
+					t.Errorf("%s JSON output %q unexpectedly contains PascalCase key %q", tt.name, got, notWant)
+				}
+			}
+		})
+	}
+}
+
 func TestForecast_InvalidHorizonIsUsageError(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "verbrauch.db")
 	setupType(t, dbPath, "oel", "L")
