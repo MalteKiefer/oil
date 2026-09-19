@@ -69,38 +69,35 @@ func TestAggregateByPeriod_MonthlyBucketing(t *testing.T) {
 }
 
 func TestAggregateByPeriod_NonMidnightNow(t *testing.T) {
-	// Test that non-midnight now values don't silently drop readings at the cutoff date.
-	// For a 7d period with now at 18:30 on Jan 7, the cutoff should be Jan 1 at 00:00.
-	// A reading dated Jan 1 should be included (it's on the cutoff boundary).
 	readings := []report.ReadingInput{
-		{Date: date("2026-01-01"), CounterValue: 100},
-		{Date: date("2026-01-03"), CounterValue: 106}, // +6 over 2 days -> 3.0/day on Jan 2 and Jan 3
-		{Date: date("2026-01-06"), CounterValue: 112}, // +6 over 3 days -> 2.0/day on Jan 4, 5, 6
+		{Date: date("2025-12-31"), CounterValue: 0},
+		{Date: date("2026-01-02"), CounterValue: 2}, // Diff=2, DiffDays=2 -> spreads to Jan 1 and Jan 2
 	}
 	points, _ := report.BuildPoints(readings)
 
-	// Call with now = Jan 7 at 18:30 (not midnight)
-	nowWithTime := date("2026-01-07").Add(18*time.Hour + 30*time.Minute)
-	buckets, err := report.AggregateByPeriod(points, "7d", nowWithTime)
+	// now carries a non-midnight time-of-day on purpose: this is what a real
+	// `time.Now()` caller (Task 13's CLI) will pass. Without normalizing now
+	// to a calendar-day midnight first, cutoff would be 2026-01-01T18:30:00,
+	// which would incorrectly exclude the Jan 1 bucket (00:00 < 18:30). With
+	// the fix, cutoff is 2026-01-01T00:00:00, so Jan 1 is correctly included
+	// ("on or after now-minus-period").
+	now := date("2026-01-08").Add(18*time.Hour + 30*time.Minute)
+
+	buckets, err := report.AggregateByPeriod(points, "7d", now)
 	if err != nil {
 		t.Fatalf("AggregateByPeriod() error = %v", err)
 	}
 
-	// Verify that readings from the cutoff date (Jan 1) through the period are included.
-	// Jan 1 has DiffDays=0 so no bucket, but Jan 2, 3, 4, 5, 6 should all be present.
-	want := []report.Bucket{
-		{Label: "2026-01-02", Total: 3},
-		{Label: "2026-01-03", Total: 3},
-		{Label: "2026-01-04", Total: 2},
-		{Label: "2026-01-05", Total: 2},
-		{Label: "2026-01-06", Total: 2},
-	}
-	if len(buckets) != len(want) {
-		t.Fatalf("buckets = %+v, want %+v", buckets, want)
-	}
-	for i := range want {
-		if buckets[i] != want[i] {
-			t.Errorf("buckets[%d] = %+v, want %+v", i, buckets[i], want[i])
+	found := false
+	for _, b := range buckets {
+		if b.Label == "2026-01-01" {
+			found = true
+			if b.Total != 1 {
+				t.Errorf("2026-01-01 bucket Total = %v, want 1", b.Total)
+			}
 		}
+	}
+	if !found {
+		t.Fatalf("expected a 2026-01-01 bucket (boundary day should be included), got %+v", buckets)
 	}
 }
